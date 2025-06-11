@@ -189,10 +189,12 @@ class RealEstateEstimator:
         price_min = prediction * (1 - confidence_interval)
         price_max = prediction * (1 + confidence_interval)
         
-        # Score de confiance basé sur la variance des arbres
-        tree_predictions = [tree.predict(features_scaled)[0] for tree in self.model.estimators_]
-        variance = np.var(tree_predictions)
-        confidence_score = max(0, min(100, 100 - (variance / prediction) * 1000))
+        # Récupération des prédictions de chaque arbre
+        tree_predictions = np.array([tree.predict(features_scaled)[0] for tree in self.model.estimators_])
+        
+        # Calcul du score de confiance amélioré
+        relative_std = np.std(tree_predictions) / prediction if prediction != 0 else 0
+        confidence_score = max(0, min(100, 100 * (1 - relative_std)))
         
         return {
             'estimated_price': round(prediction),
@@ -200,9 +202,8 @@ class RealEstateEstimator:
             'price_max': round(price_max),
             'price_per_sqm': round(prediction / data.surface),
             'confidence_score': round(confidence_score, 1),
-            'variance': variance
+            'variance': np.var(tree_predictions)
         }
-
 # Instance globale du modèle
 estimator = RealEstateEstimator()
 
