@@ -70,7 +70,7 @@ class RealEstateEstimator:
         self.model = None
         self.scaler = StandardScaler()
         self.feature_columns = [
-            'surface', 'rooms', 'bedrooms', 'bathrooms', 'year',
+            'surface', 'rooms', 'bedrooms', 'bathrooms', 'year', 'floor',
             'condition_encoded', 'property_type_encoded', 'parking'
             'condition_encoded', 'property_type_encoded', 'parking_encoded',
             'garden_encoded', 'latitude', 'longitude', 'district_score'
@@ -84,11 +84,14 @@ class RealEstateEstimator:
         property_type_mapping = {'apartment': 1, 'house': 2, 'studio': 0, 'loft': 3, 'duplex': 4}
         parking_mapping = {'none': 0, 'street': 1, 'covered': 2, 'garage': 3}
         garden_mapping = {'none': 0, 'balcony': 1, 'terrace': 2, 'garden': 3}
+        # Normaliser le nombre d'étages (0 pour rez-de-chaussée)
+        floor = data.floor if data.floor else 0
         
         # Calcul du score de quartier basé sur la localisation (simulation)
         district_score = self.calculate_district_score(data.latitude, data.longitude)
         
         features = np.array([
+            floor,
             data.surface,
             data.rooms,
             data.bedrooms,
@@ -127,6 +130,7 @@ class RealEstateEstimator:
         n_samples = 10000
         
         # Features simulées
+        floor = np.random.randint(0, 10, n_samples)  # De 0 (rdc) à 10 étages
         surface = np.random.normal(80, 30, n_samples)
         rooms = np.random.randint(1, 6, n_samples)
         bedrooms = np.random.randint(0, 4, n_samples)
@@ -141,7 +145,7 @@ class RealEstateEstimator:
         district_score = np.random.uniform(3, 9, n_samples)
         
         X = np.column_stack([
-            surface, rooms, bedrooms, bathrooms, year,
+            surface, rooms, floor, bedrooms, bathrooms, year,
             condition, property_type, parking, garden,
             latitude, longitude, district_score
         ])
@@ -151,7 +155,8 @@ class RealEstateEstimator:
                      rooms * 10000 +     # Bonus par pièce
                      condition * 15000 + # Bonus état
                      district_score * 8000 + # Bonus quartier
-                     (2024 - year) * -500)   # Malus âge
+                     (2024 - year) * -500 +
+                     floor * 5000)   # Malus âge
         
         # Ajout de bruit réaliste
         noise = np.random.normal(0, 50000, n_samples)
@@ -303,7 +308,8 @@ def analyze_price_factors(property_data: PropertyData, estimation: dict) -> dict
         'condition_impact': {'excellent': 10, 'good': 5, 'average': 0, 'renovation': -10}.get(property_data.condition, 0),
         'size_impact': 5 if 80 <= property_data.surface <= 120 else 0,
         'year_impact': max(-15, min(10, (property_data.year - 1990) / 10)),
-        'parking_impact': {'garage': 8, 'covered': 5, 'street': 2, 'none': 0}.get(property_data.parking, 0)
+        'parking_impact': {'garage': 8, 'covered': 5, 'street': 2, 'none': 0}.get(property_data.parking, 0),
+        'floor_impact': property_data.floor * 2 if property_data.floor else 0  # 2% par étage
     }
     
     return factors
@@ -347,7 +353,4 @@ if __name__ == "__main__":
         reload=True,          # <-- reload utilisable
         log_level="info"
     )
-
-
-
 
