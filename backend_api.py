@@ -1,8 +1,3 @@
-"""
-Backend Python pour l'estimation immobilière
-FastAPI + Machine Learning
-"""
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,19 +17,52 @@ logger = logging.getLogger(__name__)
 
 # Initialisation de l'application FastAPI
 app = FastAPI(
-    title="EstimPro API",
-    description="API d'estimation immobilière avec IA",
+    title="EstimPro API - Madagascar",
+    description="API d'estimation immobilière avec IA adaptée à Antananarivo, Madagascar",
     version="1.0.0"
 )
 
 # Configuration CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En production, spécifier les domaines autorisés
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Données des quartiers d'Antananarivo avec fourchettes de prix au m² (en MGA)
+QUARTIERS = {
+    # Centre-ville & quartiers haut de gamme
+    "Analakely": {"min_price_sqm": 300000, "max_price_sqm": 1000000, "base_score": 9.0},
+    "Antaninarenina": {"min_price_sqm": 300000, "max_price_sqm": 1000000, "base_score": 9.0},
+    "Isoraka": {"min_price_sqm": 300000, "max_price_sqm": 1000000, "base_score": 8.5},
+    "Ambatonakanga": {"min_price_sqm": 300000, "max_price_sqm": 800000, "base_score": 8.0},
+    "Ankadifotsy": {"min_price_sqm": 250000, "max_price_sqm": 700000, "base_score": 7.5},
+    "Tsaralalana": {"min_price_sqm": 300000, "max_price_sqm": 600000, "base_score": 7.0},
+    # Quartiers résidentiels proches
+    "Ivandry": {"min_price_sqm": 200000, "max_price_sqm": 500000, "base_score": 6.5},
+    "Ambohipo": {"min_price_sqm": 150000, "max_price_sqm": 300000, "base_score": 6.0},
+    "Ambatoroka": {"min_price_sqm": 60000, "max_price_sqm": 150000, "base_score": 5.5},
+    "Ambohijatovo": {"min_price_sqm": 150000, "max_price_sqm": 250000, "base_score": 5.5},
+    "Ankadivato": {"min_price_sqm": 200000, "max_price_sqm": 350000, "base_score": 6.0},
+    "Ampasampito": {"min_price_sqm": 150000, "max_price_sqm": 300000, "base_score": 5.5},
+    # Banlieues et zones en expansion
+    "Ivato": {"min_price_sqm": 100000, "max_price_sqm": 250000, "base_score": 5.0},
+    "Talatamaty": {"min_price_sqm": 80000, "max_price_sqm": 150000, "base_score": 4.5},
+    "Tanjombato": {"min_price_sqm": 70000, "max_price_sqm": 120000, "base_score": 4.0},
+    "Ambohidratrimo": {"min_price_sqm": 50000, "max_price_sqm": 120000, "base_score": 4.0},
+    "Ambohimalaza": {"min_price_sqm": 30000, "max_price_sqm": 100000, "base_score": 3.5},
+    "Anosizato": {"min_price_sqm": 70000, "max_price_sqm": 150000, "base_score": 4.0},
+    "Andoharanofotsy": {"min_price_sqm": 60000, "max_price_sqm": 130000, "base_score": 3.5},
+    # Zones périphériques et rurales
+    "Alakamisy-Ambohidratrimo": {"min_price_sqm": 4000, "max_price_sqm": 20000, "base_score": 2.0},
+    "Anjeva Gara": {"min_price_sqm": 10000, "max_price_sqm": 30000, "base_score": 2.0},
+    "Moramanga": {"min_price_sqm": 3000, "max_price_sqm": 15000, "base_score": 1.5},
+    "Manjakandriana": {"min_price_sqm": 5000, "max_price_sqm": 25000, "base_score": 1.5},
+    "Ambatomirahavavy": {"min_price_sqm": 40000, "max_price_sqm": 60000, "base_score": 3.0},
+    "Anosiala": {"min_price_sqm": 5000, "max_price_sqm": 30000, "base_score": 2.0}
+}
 
 # Modèles de données Pydantic
 class PropertyData(BaseModel):
@@ -53,6 +81,7 @@ class PropertyData(BaseModel):
     elevator: Optional[bool] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    district: Optional[str] = None
 
 class EstimationResponse(BaseModel):
     estimated_price: float
@@ -71,136 +100,121 @@ class RealEstateEstimator:
         self.scaler = StandardScaler()
         self.feature_columns = [
             'surface', 'rooms', 'bedrooms', 'bathrooms', 'year', 'floor',
-            'condition_encoded', 'property_type_encoded', 'parking'
             'condition_encoded', 'property_type_encoded', 'parking_encoded',
-            'garden_encoded', 'latitude', 'longitude', 'district_score'
+            'garden_encoded', 'district_score', 'base_price_sqm'
         ]
         self.is_trained = False
-        
+
+    def get_district_info(self, address: str, lat: Optional[float], lon: Optional[float]) -> tuple:
+        """Identifie le quartier à partir de l'adresse ou des coordonnées"""
+        for district, info in QUARTIERS.items():
+            if district.lower() in address.lower():
+                return district, info["min_price_sqm"], info["max_price_sqm"], info["base_score"]
+        # Valeur par défaut si aucun quartier n'est identifié
+        return "Unknown", 50000, 100000, 5.0
+
     def preprocess_data(self, data: PropertyData) -> np.ndarray:
         """Préprocessing des données d'entrée"""
-        # Encodage des variables catégorielles
         condition_mapping = {'excellent': 4, 'good': 3, 'average': 2, 'renovation': 1}
         property_type_mapping = {'apartment': 1, 'house': 2, 'studio': 0, 'loft': 3, 'duplex': 4}
         parking_mapping = {'none': 0, 'street': 1, 'covered': 2, 'garage': 3}
         garden_mapping = {'none': 0, 'balcony': 1, 'terrace': 2, 'garden': 3}
-        # Normaliser le nombre d'étages (0 pour rez-de-chaussée)
         floor = data.floor if data.floor else 0
-        
-        # Calcul du score de quartier basé sur la localisation (simulation)
-        district_score = self.calculate_district_score(data.latitude, data.longitude)
-        
+
+        district, min_price_sqm, max_price_sqm, district_score = self.get_district_info(data.address, data.latitude, data.longitude)
+        base_price_sqm = (min_price_sqm + max_price_sqm) / 2  # Prix moyen au m² pour le quartier
+
         features = np.array([
-            floor,
             data.surface,
             data.rooms,
             data.bedrooms,
             data.bathrooms,
             data.year,
+            floor,
             condition_mapping.get(data.condition, 2),
             property_type_mapping.get(data.property_type, 1),
             parking_mapping.get(data.parking, 0),
             garden_mapping.get(data.garden, 0),
-            data.latitude or 48.8566,  # Paris par défaut
-            data.longitude or 2.3522,
-            district_score
+            district_score,
+            base_price_sqm
         ]).reshape(1, -1)
-        
+
         return features
-    
-    def calculate_district_score(self, lat: Optional[float], lon: Optional[float]) -> float:
-        """Calcule un score de quartier basé sur la localisation"""
-        if not lat or not lon:
-            return 5.0  # Score moyen par défaut
-        
-        # Simulation d'un score basé sur la proximité du centre de Paris
-        paris_center_lat, paris_center_lon = 48.8566, 2.3522
-        distance = np.sqrt((lat - paris_center_lat)**2 + (lon - paris_center_lon)**2)
-        
-        # Score inversement proportionnel à la distance (0-10)
-        score = max(0, 10 - distance * 100)
-        return min(10, score)
-    
+
     def train_model(self):
-        """Entraîne le modèle avec des données simulées"""
+        """Entraîne le modèle avec des données simulées adaptées pour Madagascar"""
         logger.info("Entraînement du modèle d'estimation...")
-        
-        # Génération de données d'entraînement simulées
+
         np.random.seed(42)
         n_samples = 10000
-        
-        # Features simulées
-        floor = np.random.randint(0, 10, n_samples)  # De 0 (rdc) à 10 étages
-        surface = np.random.normal(80, 30, n_samples)
-        rooms = np.random.randint(1, 6, n_samples)
-        bedrooms = np.random.randint(0, 4, n_samples)
-        bathrooms = np.random.randint(1, 3, n_samples)
-        year = np.random.randint(1950, 2024, n_samples)
-        condition = np.random.randint(1, 5, n_samples)
+
+        # Générer des données simulées adaptées à Madagascar
+        surface = np.random.normal(80, 20, n_samples)  # Surface moyenne réduite
+        rooms = np.random.randint(1, 5, n_samples)  # Moins de pièces
+        bedrooms = np.random.randint(0, 3, n_samples)
+        bathrooms = np.random.randint(1, 2, n_samples)  # Moins de salles de bain
+        year = np.random.randint(1980, 2024, n_samples)  # Constructions plus récentes
+        condition = np.random.randint(1, 4, n_samples)  # Moins de biens en excellent état
         property_type = np.random.randint(0, 5, n_samples)
-        parking = np.random.randint(0, 4, n_samples)
-        garden = np.random.randint(0, 4, n_samples)
-        latitude = np.random.normal(48.8566, 0.1, n_samples)
-        longitude = np.random.normal(2.3522, 0.1, n_samples)
-        district_score = np.random.uniform(3, 9, n_samples)
-        
+        parking = np.random.randint(0, 3, n_samples)  # Moins de garages
+        garden = np.random.randint(0, 3, n_samples)  # Moins de jardins
+        floor = np.random.randint(0, 4, n_samples)  # Moins d'étages élevés
+        district_indices = np.random.choice(list(QUARTIERS.keys()), n_samples)
+        district_scores = np.array([QUARTIERS[d]["base_score"] for d in district_indices])
+        base_price_sqm = np.array([(QUARTIERS[d]["min_price_sqm"] + QUARTIERS[d]["max_price_sqm"]) / 2 for d in district_indices])
+
         X = np.column_stack([
-            surface, rooms, floor, bedrooms, bathrooms, year,
+            surface, rooms, bedrooms, bathrooms, year, floor,
             condition, property_type, parking, garden,
-            latitude, longitude, district_score
+            district_scores, base_price_sqm
         ])
-        
-        # Prix simulé avec une formule réaliste
-        base_price = (surface * 5000 +  # Prix de base par m²
-                     rooms * 10000 +     # Bonus par pièce
-                     condition * 15000 + # Bonus état
-                     district_score * 8000 + # Bonus quartier
-                     (2024 - year) * -500 +
-                     floor * 5000)   # Malus âge
-        
-        # Ajout de bruit réaliste
-        noise = np.random.normal(0, 50000, n_samples)
-        y = np.maximum(base_price + noise, 100000)  # Prix minimum 100k€
-        
-        # Normalisation des features
+
+        # Calcul du prix adapté à Madagascar (basé principalement sur le prix au m² du quartier)
+        y = surface * base_price_sqm * (
+            1 + 
+            (condition - 2) * 0.05 +  # Impact réduit de l'état
+            (rooms - 2) * 0.03 +      # Impact réduit des pièces
+            (bedrooms - 1) * 0.02 +   # Impact réduit des chambres
+            (bathrooms - 1) * 0.02 +  # Impact réduit des salles de bain
+            (year - 2000) * -0.001 +  # Impact réduit de l'ancienneté
+            floor * 0.01 +           # Impact réduit de l'étage
+            np.random.normal(0, 0.05, n_samples)  # Bruit réduit
+        )
+
+        # Assurer que les prix sont positifs et dans des limites raisonnables
+        y = np.maximum(y, base_price_sqm * surface * 0.8)
+
         X_scaled = self.scaler.fit_transform(X)
-        
-        # Entraînement du modèle
+
         self.model = RandomForestRegressor(
             n_estimators=100,
-            max_depth=15,
+            max_depth=12,  # Réduit pour éviter le surajustement
             random_state=42,
             n_jobs=-1
         )
         self.model.fit(X_scaled, y)
         self.is_trained = True
-        
+
         logger.info("Modèle entraîné avec succès!")
-        
+
     def predict(self, data: PropertyData) -> dict:
         """Effectue une prédiction d'estimation"""
         if not self.is_trained:
             self.train_model()
-        
-        # Préprocessing
+
         features = self.preprocess_data(data)
         features_scaled = self.scaler.transform(features)
-        
-        # Prédiction
+
         prediction = self.model.predict(features_scaled)[0]
-        
-        # Calcul de l'intervalle de confiance (±10%)
-        confidence_interval = 0.10
+
+        confidence_interval = 0.15  # Intervalle de confiance plus large pour Madagascar
         price_min = prediction * (1 - confidence_interval)
         price_max = prediction * (1 + confidence_interval)
-        
-        # Récupération des prédictions de chaque arbre
+
         tree_predictions = np.array([tree.predict(features_scaled)[0] for tree in self.model.estimators_])
-        
-        # Calcul du score de confiance amélioré
         relative_std = np.std(tree_predictions) / prediction if prediction != 0 else 0
         confidence_score = max(0, min(100, 100 * (1 - relative_std)))
-        
+
         return {
             'estimated_price': round(prediction),
             'price_min': round(price_min),
@@ -209,13 +223,14 @@ class RealEstateEstimator:
             'confidence_score': round(confidence_score, 1),
             'variance': np.var(tree_predictions)
         }
+
 # Instance globale du modèle
 estimator = RealEstateEstimator()
 
 # Routes API
 @app.get("/")
 async def root():
-    return {"message": "EstimPro API - Service d'estimation immobilière"}
+    return {"message": "EstimPro API - Service d'estimation immobilière (Antananarivo, Madagascar)"}
 
 @app.get("/health")
 async def health_check():
@@ -230,21 +245,18 @@ async def estimate_property(property_data: PropertyData):
     """Endpoint principal d'estimation"""
     try:
         logger.info(f"Nouvelle demande d'estimation pour: {property_data.address}")
-        
-        # Validation des données
+
         if property_data.surface <= 0:
             raise HTTPException(status_code=400, detail="La surface doit être positive")
         if property_data.rooms <= 0:
             raise HTTPException(status_code=400, detail="Le nombre de pièces doit être positif")
-        
-        # Estimation
+
         estimation_result = estimator.predict(property_data)
-        
-        # Génération des données de marché simulées
+
         market_trends = generate_market_trends()
         comparable_properties = generate_comparable_properties(property_data)
         factors_analysis = analyze_price_factors(property_data, estimation_result)
-        
+
         response = EstimationResponse(
             estimated_price=estimation_result['estimated_price'],
             price_min=estimation_result['price_min'],
@@ -255,102 +267,101 @@ async def estimate_property(property_data: PropertyData):
             comparable_properties=comparable_properties,
             factors_analysis=factors_analysis
         )
-        
-        logger.info(f"Estimation réalisée: {estimation_result['estimated_price']}€")
+
+        logger.info(f"Estimation réalisée: {estimation_result['estimated_price']} MGA")
         return response
-        
+
     except Exception as e:
         logger.error(f"Erreur lors de l'estimation: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erreur interne: {str(e)}")
 
 def generate_market_trends() -> List[dict]:
-    """Génère des données de tendance de marché simulées"""
+    """Génère des données de tendance de marché simulées pour Madagascar"""
     months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun']
-    base_price = 4200
+    base_price = 150000  # Prix moyen au m² à Antananarivo
     trends = []
-    
+
     for i, month in enumerate(months):
-        price = base_price + (i * 150) + np.random.randint(-50, 100)
+        price = base_price + (i * 5000) + np.random.randint(-3000, 3000)
         trends.append({
             'month': month,
             'price': price,
             'change': round(((price - base_price) / base_price) * 100, 1)
         })
-    
+
     return trends
 
 def generate_comparable_properties(property_data: PropertyData) -> List[dict]:
     """Génère des biens comparables simulés"""
     comparables = []
-    base_price = property_data.surface * 4800
-    
+    district, min_price_sqm, max_price_sqm, _ = estimator.get_district_info(property_data.address, property_data.latitude, property_data.longitude)
+    base_price_sqm = (min_price_sqm + max_price_sqm) / 2
+    base_price = property_data.surface * base_price_sqm
+
     for i in range(4):
-        surface_variation = np.random.randint(-10, 15)
-        price_variation = np.random.randint(-30000, 40000)
-        
-        surface = max(30, property_data.surface + surface_variation)
-        price = max(150000, base_price + price_variation)
-        
+        surface_variation = np.random.randint(-10, 10)
+        price_variation = np.random.randint(-0.05 * base_price, 0.05 * base_price)
+
+        surface = max(20, property_data.surface + surface_variation)
+        price = max(base_price_sqm * surface * 0.8, base_price + price_variation)
+
         comparables.append({
-            'address': f"Rue Example {i+1}, 75001 Paris",
-            'surface': surface,
+            'address': f"{district} Exemple {i+1}, Antananarivo",
+            'surface': round(surface, 1),
             'price': round(price),
             'price_per_sqm': round(price / surface),
             'sold_date': f"2024-0{np.random.randint(1, 4)}-{np.random.randint(10, 28)}"
         })
-    
+
     return comparables
 
 def analyze_price_factors(property_data: PropertyData, estimation: dict) -> dict:
     """Analyse les facteurs influençant le prix"""
+    district, _, _, district_score = estimator.get_district_info(property_data.address, property_data.latitude, property_data.longitude)
     factors = {
-        'location_impact': 15 if property_data.latitude and abs(property_data.latitude - 48.8566) < 0.05 else 5,
-        'condition_impact': {'excellent': 10, 'good': 5, 'average': 0, 'renovation': -10}.get(property_data.condition, 0),
-        'size_impact': 5 if 80 <= property_data.surface <= 120 else 0,
-        'year_impact': max(-15, min(10, (property_data.year - 1990) / 10)),
-        'parking_impact': {'garage': 8, 'covered': 5, 'street': 2, 'none': 0}.get(property_data.parking, 0),
-        'floor_impact': property_data.floor * 2 if property_data.floor else 0  # 2% par étage
+        'location_impact': district_score * 2,  # Impact principal du quartier
+        'condition_impact': {'excellent': 5, 'good': 2, 'average': 0, 'renovation': -5}.get(property_data.condition, 0),
+        'size_impact': 2 if 60 <= property_data.surface <= 100 else 0,
+        'year_impact': max(-5, min(5, (property_data.year - 2000) / 10)),
+        'parking_impact': {'garage': 3, 'covered': 2, 'street': 1, 'none': 0}.get(property_data.parking, 0),
+        'floor_impact': property_data.floor * 0.5 if property_data.floor else 0
     }
-    
+
     return factors
 
-# Endpoint pour les statistiques de marché
 @app.get("/market-stats")
 async def get_market_stats():
     """Retourne les statistiques générales du marché"""
     return {
-        'average_price_per_sqm': 4850,
-        'market_growth_6m': 15.5,
-        'average_selling_time': 23,
-        'total_transactions': 50000,
+        'average_price_per_sqm': 150000,  # Prix moyen au m² à Antananarivo
+        'market_growth_6m': 5.0,  # Croissance plus modérée
+        'average_selling_time': 30,  # Temps de vente plus long
+        'total_transactions': 20000,
         'last_update': datetime.now().isoformat()
     }
 
-# Endpoint pour la géolocalisation
 @app.get("/geocode")
 async def geocode_address(address: str):
     """Géocode une adresse (simulation)"""
-    # En production, utiliser une vraie API de géocodage
+    district, _, _, district_score = estimator.get_district_info(address, None, None)
     return {
         'address': address,
-        'latitude': 48.8566 + np.random.uniform(-0.1, 0.1),
-        'longitude': 2.3522 + np.random.uniform(-0.1, 0.1),
-        'district': 'Paris Centre',
-        'district_score': np.random.uniform(6, 9)
+        'latitude': -18.8792 + np.random.uniform(-0.05, 0.05),  # Coordonnées approximatives d'Antananarivo
+        'longitude': 47.5079 + np.random.uniform(-0.05, 0.05),
+        'district': district,
+        'district_score': district_score
     }
 
 if __name__ == "__main__":
-    print("🚀 Démarrage du serveur EstimPro API...")
-    print("📊 Entraînement du modèle IA...")
+    print("🚀 Démarrage du serveur EstimPro API (Antananarivo, Madagascar)...")
+    print("📊 Entraînement du modèle IA avec prix adaptés...")
     estimator.train_model()
     print("✅ Serveur prêt!")
 
-    import uvicorn
     uvicorn.run(
-        "backend_api:app",    # <-- import string
+        "backend_api:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,          # <-- reload utilisable
+        reload=True,
         log_level="info"
     )
-
